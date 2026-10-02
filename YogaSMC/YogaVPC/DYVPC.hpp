@@ -207,7 +207,19 @@ private:
      */
     bool WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command = HPWMI_READ, UInt32 insize = sizeof(UInt32), UInt32 outsize = sizeof(UInt32), UInt32 midOverride = 0);
 
+    /**
+     *  Leave HP "WMI hotkey mode" if Windows left it on.
+     *
+     *  HP's Windows driver writes SHK (EC 0xE6) = 0x6e. In that mode the brightness keys
+     *  all send PS/2 e0 01 and macOS can't use them. EC0.SSHK(0) restores normal keys.
+     *  Only writes when SHK is non-zero.
+     *
+     *  @param reason for the log
+     */
+    void resetHotkeyMode(const char *reason);
+
 public:
     IOReturn message(UInt32 type, IOService *provider, void *argument) APPLE_KEXT_OVERRIDE;
+    IOReturn setPowerState(unsigned long powerStateOrdinal, IOService * whatDevice) APPLE_KEXT_OVERRIDE;
 };
 #endif /* DYVPC_hpp */

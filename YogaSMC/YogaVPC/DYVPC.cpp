@@ -69,6 +69,8 @@ bool DYVPC::initVPC() {
     if (inputCap)
         YWMI->enableEvent(INPUT_WMI_EVENT, true);
 
+    resetHotkeyMode("start");
+
 //    if (BIOSCap) {
 //        UInt32 value;
 //        if (WMIQuery(HPWMI_HARDWARE_QUERY, &value))
@@ -140,6 +142,32 @@ void DYVPC::updateVPC(UInt32 event) {
         DebugLog("Bezel id: 0x%x - 0x%x", id, data);
     else
         DebugLog("Unknown id: 0x%x - 0x%x", id, data);
+}
+
+void DYVPC::resetHotkeyMode(const char *reason) {
+    if (!ec || ec->validateObject("SSHK") != kIOReturnSuccess)
+        return;
+
+    UInt32 shk = 0;
+    if (readECName("SHK_", &shk) != kIOReturnSuccess || shk == 0) {
+        DebugLog("%s: SHK 0x%02x, nothing to do", reason, shk);
+        return;
+    }
+
+    OSObject *params[1] = { OSNumber::withNumber(0ULL, 8) };
+    IOReturn ret = ec->evaluateObject("SSHK", nullptr, params, 1);
+    params[0]->release();
+
+    UInt32 after = 0xFFFF;
+    readECName("SHK_", &after);
+    AlwaysLog("%s: hotkey mode SHK 0x%02x -> 0x%02x (SSHK ret 0x%x)", reason, shk, after, ret);
+}
+
+IOReturn DYVPC::setPowerState(unsigned long powerStateOrdinal, IOService * whatDevice) {
+    IOReturn ret = super::setPowerState(powerStateOrdinal, whatDevice);
+    if (ret == kIOPMAckImplied && powerStateOrdinal != 0)
+        resetHotkeyMode("wake");
+    return ret;
 }
 
 IOReturn DYVPC::message(UInt32 type, IOService *provider, void *argument) {
