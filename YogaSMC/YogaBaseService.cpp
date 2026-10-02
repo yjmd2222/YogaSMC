@@ -148,12 +148,22 @@ bool YogaBaseService::findPNP(const char *id, IOACPIPlatformDevice **dev) {
         if (!iterator) {
             AlwaysLog("findPNP failed to create iterator");
         } else {
-            while (auto entry = iterator->getNextObject()) {
-                if (entry->compareName(pnp, nullptr)) {
-                    DebugLog("found %s at %s", id, entry->getName());
-                    if ((*dev = OSDynamicCast(IOACPIPlatformDevice, entry)))
-                        break;
+            // The registry can change while we walk it (busy boots); the iterator then
+            // stops early and goes invalid. Restart the walk a few times in that case.
+            for (int attempt = 0; attempt < 5 && !*dev; attempt++) {
+                if (attempt) {
+                    DebugLog("findPNP for %s: registry changed during walk, retry %d", id, attempt);
+                    iterator->reset();
                 }
+                while (auto entry = iterator->getNextObject()) {
+                    if (entry->compareName(pnp, nullptr)) {
+                        DebugLog("found %s at %s", id, entry->getName());
+                        if ((*dev = OSDynamicCast(IOACPIPlatformDevice, entry)))
+                            break;
+                    }
+                }
+                if (iterator->isValid())
+                    break;
             }
             iterator->release();
         }

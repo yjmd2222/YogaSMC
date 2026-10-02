@@ -205,7 +205,7 @@ private:
      *
      *  @return true on success
      */
-    bool WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command = HPWMI_READ, UInt32 insize = sizeof(UInt32), UInt32 outsize = sizeof(UInt32));
+    bool WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command = HPWMI_READ, UInt32 insize = sizeof(UInt32), UInt32 outsize = sizeof(UInt32), UInt32 midOverride = 0);
 
 public:
     IOReturn message(UInt32 type, IOService *provider, void *argument) APPLE_KEXT_OVERRIDE;

@@ -151,7 +151,7 @@ IOReturn DYVPC::message(UInt32 type, IOService *provider, void *argument) {
     return kIOReturnSuccess;
 }
 
-bool DYVPC::WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command, UInt32 insize, UInt32 outsize) {
+bool DYVPC::WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command, UInt32 insize, UInt32 outsize, UInt32 midOverride) {
     struct bios_args args = {
         .signature      = 0x55434553,
         .command        = command,
@@ -176,6 +176,8 @@ bool DYVPC::WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command, UI
         mid = 2;
     else
         mid = 1;
+    if (midOverride)
+        mid = midOverride;
 
     OSNumber *vsize = nullptr;
     if (command == HPWMI_READ && readCommandDateSize)
@@ -190,6 +192,8 @@ bool DYVPC::WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command, UI
 
     OSObject *result;
 
+    DebugLog("BIOS query 0x%x: cmd %d mid %d insize %d in.data[0..3] %02x %02x %02x %02x",
+             query, command, mid, insize, args.data[0], args.data[1], args.data[2], args.data[3]);
     IOReturn ret = YWMI->evaluateMethod(BIOS_QUERY_WMI_METHOD, 0, mid, &result, in);
     OSSafeReleaseNULL(in);
 
@@ -206,6 +210,16 @@ bool DYVPC::WMIQuery(UInt32 query, void *buffer, enum hp_wmi_command command, UI
         AlwaysLog("BIOS query 0x%x: unexpected output type", query);
         OSSafeReleaseNULL(result);
         return false;
+    }
+
+    {
+        // x2g2: dump the raw reply (sigpass, return_code, first data bytes)
+        const UInt8 *b = reinterpret_cast<const UInt8 *>(output->getBytesNoCopy());
+        UInt32 len = output->getLength();
+        char hex[3 * 24 + 1] = {0};
+        for (UInt32 k = 0; k < len && k < 24; k++)
+            snprintf(hex + 3 * k, 4, "%02x ", b[k]);
+        AlwaysLog("BIOS query 0x%x: reply len %d: %s", query, len, hex);
     }
 
     const struct bios_return *biosRet = reinterpret_cast<const struct bios_return*>(output->getBytesNoCopy());
@@ -265,6 +279,43 @@ void DYVPC::setPropertiesGated(OSObject *props) {
                     AlwaysLog("%s 0x%x result: 0x%x", "BIOSQuery", value->unsigned32BitValue(), result);
                 else
                     AlwaysLog("%s failed 0x%x", "BIOSQuery", value->unsigned32BitValue());
+            } else if (key->isEqualTo("SetSHK")) {
+                // x2g2 debug: write the EC hotkey-mode byte (SHK, EC 0xE6) through the BIOS's own EC0.SSHK.
+                // 0x00 = normal keys (power-on default), 0x6e = WMI hotkey mode (what Windows/Linux hp-wmi set).
+                OSNumber *value;
+                getPropertyNumber("SetSHK");
+
+                UInt32 v = value->unsigned32BitValue();
+                if (v > 0xFF) {
+                    AlwaysLog("SetSHK: 0x%x out of range", v);
+                    continue;
+                }
+                UInt32 before = 0xFFFF, after = 0xFFFF;
+                readECName("SHK_", &before);
+                OSObject *params[1] = { OSNumber::withNumber(v, 8) };
+                IOReturn r = ec->evaluateObject("SSHK", nullptr, params, 1);
+                params[0]->release();
+                readECName("SHK_", &after);
+                AlwaysLog("SetSHK 0x%02x: SSHK ret 0x%x, SHK 0x%02x -> 0x%02x", v, r, before, after);
+            } else if (key->isEqualTo("BIOSQueryRaw")) {
+                // x2g2 debug: value = 0xTTMM (commandtype, method id 1-5); READ only, data 0
+                if (!BIOSCap) {
+                    AlwaysLog(notSupported, "BIOSQueryRaw");
+                    continue;
+                }
+
+                OSNumber *value;
+                getPropertyNumber("BIOSQueryRaw");
+
+                UInt32 raw = value->unsigned32BitValue();
+                UInt32 type = (raw >> 8) & 0xFF, mid = raw & 0xFF;
+                if (mid < 1 || mid > 5) {
+                    AlwaysLog("BIOSQueryRaw: mid %d out of range 1-5", mid);
+                    continue;
+                }
+                UInt32 result = 0;
+                bool ok = WMIQuery(type, &result, HPWMI_READ, sizeof(UInt32), sizeof(UInt32), mid);
+                AlwaysLog("BIOSQueryRaw type 0x%x mid %d: %s result 0x%x", type, mid, ok ? "ok" : "failed", result);
             } else {
                 OSDictionary *entry = OSDictionary::withCapacity(1);
                 entry->setObject(key, dict->getObject(key));
