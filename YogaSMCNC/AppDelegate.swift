@@ -318,6 +318,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     object: nil
                 )
             }
+        case "DYVPC":
+            conf.events = hpEvents
+            isOpen = registerNotification(&conf)
         case "YogaHIDD":
             conf.events = HIDDEvents
             _ = registerNotification(&conf)

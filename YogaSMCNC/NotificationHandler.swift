@@ -220,6 +220,8 @@ func eventActuator(_ desc: EventDesc, _ data: UInt32, _ conf: inout SharedConfig
         }
     case .wireless:
         wirelessHelper(desc.name, desc.display)
+    case .hpwireless:
+        hpWirelessHelper(desc.name, desc.display, conf.service)
     default:
         #if DEBUG
         if #available(macOS 10.12, *) {

@@ -13,7 +13,7 @@ import os.log
 enum EventAction: String {
     // Userspace
     case nothing, script, launchapp, launchbundle
-    case airplane, wireless, bluetooth, bluetoothdiscoverable
+    case airplane, wireless, bluetooth, bluetoothdiscoverable, hpwireless
     case prefpane, spotlight, search, siri, sleep, micmute
     case mission, launchpad, desktop, expose
     case mirror, camera, yoga
@@ -163,6 +163,12 @@ let thinkEvents: [UInt32: [UInt32: EventDesc]] = [
         5: EventDesc("Tent Mode")
     ], // 0x60C0
     TP_HKEY_EV_THM_TRANSFM_CHANGED.rawValue: [0: EventDesc("Thermal Changed", display: false)] // 0x60F0
+]
+
+// HP (DYVPC): WMI event IDs from \_SB.WMIV._WED (HPWMI_*)
+let hpEvents: [UInt32: [UInt32: EventDesc]] = [
+    0x01: [0: EventDesc("Dock", display: false)],          // HPWMI_DOCK_EVENT (cover/dock change)
+    0x05: [0: EventDesc("Wireless", act: .hpwireless)]     // HPWMI_WIRELESS: Fn wireless button (EC also toggles the RF-kill line)
 ]
 
 let HIDDEvents: [UInt32: [UInt32: EventDesc]] = [

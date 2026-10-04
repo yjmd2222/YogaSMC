@@ -142,6 +142,10 @@ void DYVPC::updateVPC(UInt32 event) {
         DebugLog("Bezel id: 0x%x - 0x%x", id, data);
     else
         DebugLog("Unknown id: 0x%x - 0x%x", id, data);
+
+    // Forward to YogaSMCNC (e.g. 0x05 = HPWMI_WIRELESS, the Fn wireless button)
+    if (client)
+        client->sendNotification(id, data);
 }
 
 void DYVPC::resetHotkeyMode(const char *reason) {
