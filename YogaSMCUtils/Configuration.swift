@@ -168,6 +168,8 @@ let thinkEvents: [UInt32: [UInt32: EventDesc]] = [
 // HP (DYVPC): WMI event IDs from \_SB.WMIV._WED (HPWMI_*)
 let hpEvents: [UInt32: [UInt32: EventDesc]] = [
     0x01: [0: EventDesc("Dock", display: false)],          // HPWMI_DOCK_EVENT (cover/dock change)
+    0x03: [0: EventDesc("Power Adapter", display: false)], // HPWMI_SMART_ADAPTER (_PSR): adapter/USB-C power change
+    0x20001: [0: EventDesc("USB-C Port", display: false)], // EC _Q07: USB Type-C port change (data = UCPN)
     0x10001: [0: EventDesc("Display Mirroring", act: .mirror)],
     0x10002: [0: EventDesc("Microphone", act: .hpmicmute)],
     0x10003: [0: EventDesc("Calendar", act: .launchbundle, display: false, opt: "com.apple.iCal")],
