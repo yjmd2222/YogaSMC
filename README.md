@@ -69,6 +69,15 @@ Currently available functions:
 | LED control | Not supported | ✅ | N/A | TBD |
 | Keyboard backlight | ✅ | ✅ | N/A | TBD |
 
+### HP hotkey configuration
+
+In the DYVPC personality of `YogaSMC/Info.plist`:
+
+- `ResetHotkeyMode` (boolean): enables the existing `SSHK(0)` reset at startup and wake when SHK is nonzero. Missing or false disables automatic reset.
+- `PS2HotkeyMap` (dictionary): two-digit lowercase hexadecimal ADB key codes mapped to integer YogaSMCNC event IDs. Missing, empty, or zero-valued entries do not intercept keys. Both directions are consumed; notifications are sent on key-down only.
+
+This branch enables reset and maps `6a` (F16) to 65537 (`0x10001`, mirror), `40` (F17) to 65538 (`0x10002`, microphone), and `4f` (F18) to 65539 (`0x10003`, Calendar). The machine SSDT configures VoodooPS2 to generate those keys; these settings do not identify the laptop model. Restart after changing the installed kext configuration.
+
 ### EC reading:
 When [Rehabman's](https://www.tonymacx86.com/threads/guide-how-to-patch-dsdt-for-working-battery-status.116102/) battery patching method `RE1B` `RECB` present (or  `SSDT-ECRW.dsl` in `SSDTSample`), desired EC fields can be read using following commands:
 

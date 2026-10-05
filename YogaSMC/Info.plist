@@ -32,6 +32,17 @@
 			<integer>200</integer>
 			<key>IOProviderClass</key>
 			<string>IOACPIPlatformDevice</string>
+			<key>ResetHotkeyMode</key>
+			<true/>
+			<key>PS2HotkeyMap</key>
+			<dict>
+				<key>6a</key>
+				<integer>65537</integer>
+				<key>40</key>
+				<integer>65538</integer>
+				<key>4f</key>
+				<integer>65539</integer>
+			</dict>
 			<key>IOUserClientClass</key>
 			<string>YogaSMCUserClient</string>
 		</dict>

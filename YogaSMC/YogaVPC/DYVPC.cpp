@@ -69,6 +69,9 @@ bool DYVPC::initVPC() {
     if (inputCap)
         YWMI->enableEvent(INPUT_WMI_EVENT, true);
 
+    AlwaysLog("HP configuration: ResetHotkeyMode=%s, PS2HotkeyMap=%s",
+              getProperty("ResetHotkeyMode") == kOSBooleanTrue ? "enabled" : "disabled",
+              OSDynamicCast(OSDictionary, getProperty("PS2HotkeyMap")) ? "configured" : "absent");
     resetHotkeyMode("start");
 
 //    if (BIOSCap) {
@@ -149,6 +152,8 @@ void DYVPC::updateVPC(UInt32 event) {
 }
 
 void DYVPC::resetHotkeyMode(const char *reason) {
+    if (getProperty("ResetHotkeyMode") != kOSBooleanTrue)
+        return;
     if (!ec || ec->validateObject("SSHK") != kIOReturnSuccess)
         return;
 
@@ -179,12 +184,12 @@ IOReturn DYVPC::message(UInt32 type, IOService *provider, void *argument) {
     // Consume both directions; perform the action once on key-down.
     if (type == kPS2M_notifyKeyPressed && argument) {
         auto *key = static_cast<PS2KeyInfo *>(argument);
-        UInt32 event = 0;
-        switch (key->adbKeyCode) {
-            case 0x6a: event = 0x10001; break;
-            case 0x40: event = 0x10002; break;
-            case 0x4f: event = 0x10003; break;
-        }
+        // Keys are two-digit hexadecimal ADB codes; values are UInt32 app events.
+        auto *map = OSDynamicCast(OSDictionary, getProperty("PS2HotkeyMap"));
+        char code[5];
+        snprintf(code, sizeof(code), "%02x", key->adbKeyCode);
+        auto *mapped = map ? OSDynamicCast(OSNumber, map->getObject(code)) : nullptr;
+        UInt32 event = mapped != nullptr ? mapped->unsigned32BitValue() : 0;
         if (event) {
             key->eatKey = true;
             AlwaysLog("HP PS2 hotkey ADB 0x%02x %s -> 0x%05x, client %s",
