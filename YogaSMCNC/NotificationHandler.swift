@@ -7,6 +7,8 @@
 //
 
 import AppKit
+import CoreGraphics
+import CoreAudio
 import os.log
 
 func registerNotification(_ conf: inout SharedConfig) -> Bool {
@@ -189,6 +191,10 @@ func eventActuator(_ desc: EventDesc, _ data: UInt32, _ conf: inout SharedConfig
     case .keyboard:
         if !desc.display { return }
         showOSDRes("Keyboard", (data != 0) ? "Enabled" : "Disabled", (data != 0) ? .kKeyboard : .kKeyboardOff)
+    case .mirror:
+        hpMirrorDisplays()
+    case .hpmicmute:
+        hpToggleMicrophone()
     case .micmute:
         micMuteHelper(conf.service, desc.name)
     case .desktop:
@@ -231,5 +237,69 @@ func eventActuator(_ desc: EventDesc, _ data: UInt32, _ conf: inout SharedConfig
         if desc.display {
             showOSD(desc.name, desc.image)
         }
+    }
+}
+
+// Configure only one external display against the built-in display. Recompute
+// the topology on each press so unplugging a monitor cannot leave stale IDs.
+func hpMirrorDisplays() {
+    var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+    var count: UInt32 = 0
+    guard CGGetOnlineDisplayList(UInt32(displays.count), &displays, &count) == .success else {
+        showOSDRes("Display", "Unable to read displays", .kSecondDisplay)
+        return
+    }
+    let online = Array(displays.prefix(Int(count)))
+    guard let internalDisplay = online.first(where: { CGDisplayIsBuiltin($0) != 0 }),
+          let external = online.first(where: { CGDisplayIsBuiltin($0) == 0 }) else {
+        os_log("HP mirror: no internal/external display pair", type: .info)
+        return
+    }
+    let mirrored = CGDisplayIsInMirrorSet(internalDisplay) != 0 || CGDisplayIsInMirrorSet(external) != 0
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success, let transaction = config else { return }
+    var error = CGError.success
+    if mirrored {
+        for display in online where CGDisplayMirrorsDisplay(display) != kCGNullDirectDisplay {
+            error = CGConfigureDisplayMirrorOfDisplay(transaction, display, kCGNullDirectDisplay)
+            if error != .success { break }
+        }
+    } else {
+        error = CGConfigureDisplayMirrorOfDisplay(transaction, external, internalDisplay)
+    }
+    if error == .success {
+        error = CGCompleteDisplayConfiguration(transaction, .forSession)
+    } else {
+        CGCancelDisplayConfiguration(transaction)
+    }
+    os_log("HP mirror: enable=%d result=%d", type: .info, !mirrored, error.rawValue)
+    showOSDRes("Display", error == .success ? (mirrored ? "Extended" : "Mirrored") : "Toggle failed", .kSecondDisplay)
+}
+
+// Some AppleALC input devices have volume but no writable mute property.
+// Keep the prior volume per device for that fallback; LED support is independent.
+private var hpMicSavedVolumes: [AudioDeviceID: Float] = [:]
+func hpToggleMicrophone() {
+    do {
+        let device = try AudioProperty<AudioDeviceID>(device: nil, emptyValue: 0, prop: defaultInputDeviceProp).get().get()
+        guard device != kAudioObjectUnknown else { throw AudioPropertyError.noProperty }
+        let mute = AudioProperty<UInt32>(device: device, emptyValue: 0, prop: muteInputVolumeProp)
+        var muted: Bool
+        if let current = try? mute.get().get(),
+           let result = try? mute.set(current == 0 ? 1 : 0).get() {
+            muted = result != 0
+        } else {
+            let volume = AudioProperty<Float>(device: device, emptyValue: 0, prop: primaryInputVolumeProp)
+            let current = try volume.get().get()
+            muted = current > 0
+            if muted { hpMicSavedVolumes[device] = current }
+            let target: Float = muted ? 0 : (hpMicSavedVolumes[device] ?? 0.5)
+            _ = try volume.set(target).get()
+        }
+        os_log("HP microphone: device=%u muted=%d", type: .info, device, muted)
+        showOSDRes("Microphone", muted ? "Mute" : "Unmute", muted ? .kMicOff : .kMic)
+    } catch {
+        os_log("HP microphone toggle failed: %s", type: .error, String(describing: error))
+        showOSDRes("Microphone", "Toggle failed", .kMic)
     }
 }
