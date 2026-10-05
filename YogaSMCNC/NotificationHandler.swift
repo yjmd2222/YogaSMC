@@ -268,7 +268,7 @@ func hpMirrorDisplays() {
         error = CGConfigureDisplayMirrorOfDisplay(transaction, external, internalDisplay)
     }
     if error == .success {
-        error = CGCompleteDisplayConfiguration(transaction, .forSession)
+        error = CGCompleteDisplayConfiguration(transaction, .permanently)
     } else {
         CGCancelDisplayConfiguration(transaction)
     }
