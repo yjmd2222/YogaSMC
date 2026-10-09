@@ -122,3 +122,7 @@ The `YogaSMCAlter.kext` is a variant without SMC keys support and the dependenci
 - [the-darkvoid](https://github.com/the-darkvoid) for [macOS-IOElectrify](https://github.com/the-darkvoid/macOS-IOElectrify)
 - [pali](https://github.com/pali) for [bmfdec](https://github.com/pali/bmfdec)
 - [benbender](https://github.com/benbender), [1Revenger1](https://github.com/1Revenger1) and other contributors for testing and feedback 
+
+## HP Elite x2 controls branch
+
+Updated 2026-10-09. This branch starts from `5cf302c` (HP WMI controls) and applies the modern login-startup change from `79c1b77`. It contains no screen-rotation controller. The optional IntelISH companion app, ISHRotation, owns rotation independently. YogaSMCNC retains its HP controls and Start at Login using SMAppService.mainApp on macOS13+, with the existing helper API on older macOS. The separate app has passed repeated rotation/HiDPI tests. The installed rotation-enabled YogaSMCNC remains available as a fallback while the new app’s login startup is verified; its Auto-Rotate is off.

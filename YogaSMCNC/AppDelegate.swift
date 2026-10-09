@@ -65,16 +65,82 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.orderFrontStandardAboutPanel(sender)
     }
 
-    @objc func toggleStartAtLogin(_ sender: NSMenuItem) {
-        let identifier = "\(Bundle.main.bundleIdentifier!)Helper" as CFString
-        if SMLoginItemSetEnabled(identifier, sender.state == .off) {
-            sender.state = (sender.state == .on) ? .off : .on
-            defaults.setValue((sender.state == .on), forKey: "StartAtLogin")
-        } else {
-            if #available(macOS 10.12, *) {
-                os_log("Toggle start at login failed", type: .error)
-            }
+    private let loginMigrationKey = "MainAppLoginMigrationCompleted"
+
+    private func loginLog(_ text: String) {
+        let folder = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs/YogaSMC", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+        let url = folder.appendingPathComponent("login.log")
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber,
+           size.intValue > 262144 { try? FileManager.default.removeItem(at: url) }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil, attributes: nil)
         }
+        if let file = FileHandle(forWritingAtPath: url.path),
+           let bytes = "\(Date()) \(text)\n".data(using: .utf8) {
+            file.seekToEndOfFile(); file.write(bytes); file.closeFile()
+        }
+    }
+
+    @available(macOS 13.0, *)
+    private func retireLegacyLoginHelper() {
+        let identifier = "\(Bundle.main.bundleIdentifier!)Helper" as CFString
+        let removed = SMLoginItemSetEnabled(identifier, false)
+        loginLog("Legacy helper disabled=\(removed)")
+    }
+
+    private func repairLoginRegistration() {
+        if #available(macOS 13.0, *) {
+            let service = SMAppService.mainApp
+            // Migrate the existing preference once. Respect later changes in System Settings.
+            if !defaults.bool(forKey: loginMigrationKey) {
+                do {
+                    if defaults.bool(forKey: "StartAtLogin"), service.status != .enabled,
+                       service.status != .requiresApproval { try service.register() }
+                    retireLegacyLoginHelper()
+                    defaults.set(true, forKey: loginMigrationKey)
+                } catch {
+                    loginLog("Main-app migration failed: \(error)")
+                }
+            }
+            loginLog("Main-app login status=\(service.status.rawValue)")
+        }
+    }
+
+    @objc func toggleStartAtLogin(_ sender: NSMenuItem) {
+        if #available(macOS 13.0, *) {
+            let service = SMAppService.mainApp
+            do {
+                if service.status == .enabled || service.status == .requiresApproval {
+                    try service.unregister()
+                } else { try service.register() }
+                retireLegacyLoginHelper()
+                defaults.set(true, forKey: loginMigrationKey)
+                defaults.set(service.status == .enabled || service.status == .requiresApproval, forKey: "StartAtLogin")
+                refreshLoginItem(sender)
+                loginLog("Login toggle status=\(service.status.rawValue)")
+                if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            } catch {
+                loginLog("Login toggle failed: \(error)")
+                showOSD("Login startup registration failed")
+            }
+        } else {
+            let identifier = "\(Bundle.main.bundleIdentifier!)Helper" as CFString
+            if SMLoginItemSetEnabled(identifier, sender.state == .off) {
+                sender.state = sender.state == .on ? .off : .on
+                defaults.set(sender.state == .on, forKey: "StartAtLogin")
+            } else { loginLog("Legacy login toggle failed") }
+        }
+    }
+
+    private func refreshLoginItem(_ item: NSMenuItem) {
+        if #available(macOS 13.0, *) {
+            let status = SMAppService.mainApp.status
+            let requested = status == .enabled || status == .requiresApproval
+            item.state = requested ? .on : .off
+            item.title = status == .requiresApproval ? "Start at Login (Allow in Settings)" : NSLocalizedString("Start at Login", comment: "")
+        } else { item.state = defaults.bool(forKey: "StartAtLogin") ? .on : .off }
     }
 
     @objc func openPrefpane() {
@@ -107,6 +173,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        if let item = menu.items.first(where: { $0.action == #selector(toggleStartAtLogin) }) { refreshLoginItem(item) }
         update()
         DispatchQueue.global(qos: .default).async {
             self.fanTimer = Timer.scheduledTimer(
@@ -198,6 +265,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         loadConfig()
+        repairLoginRegistration()
 
         initMenu(props["VersionInfo"] as? String ?? NSLocalizedString("Unknown Version", comment: ""))
         initNotification(props["EC Capability"] as? String)
@@ -255,7 +323,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let loginPrompt = NSLocalizedString("Start at Login", comment: "")
         let login = NSMenuItem(title: loginPrompt, action: #selector(toggleStartAtLogin), keyEquivalent: "s")
-        login.state = defaults.bool(forKey: "StartAtLogin") ? .on : .off
+        refreshLoginItem(login)
         appMenu.insertItem(NSMenuItem.separator(), at: 4)
         appMenu.insertItem(login, at: 5)
 
