@@ -122,6 +122,41 @@ public:
     atomicFpKey(_Atomic(uint32_t) *currentSensor) : currentSensor(currentSensor) {};
 };
 
+// One atomic snapshot combines uptime-seconds and value; no ACPI/locks on SMC reads.
+inline uint32_t hpSensorSeconds() {
+    uint64_t ticks, ns; clock_get_uptime(&ticks); absolutetime_to_nanoseconds(ticks, &ns);
+    return static_cast<uint32_t>(ns / NSEC_PER_SEC);
+}
+inline void hpCacheStore(_Atomic(uint64_t) *cache, uint32_t value) {
+    atomic_store_explicit(cache, (static_cast<uint64_t>(hpSensorSeconds()) << 32) | value, memory_order_release);
+}
+class hpCachedKey : public VirtualSMCValue {
+    _Atomic(uint64_t) *cache; uint32_t maxAge; bool rpm;
+protected:
+    SMC_RESULT readAccess() override;
+public:
+    hpCachedKey(_Atomic(uint64_t) *cache, uint32_t maxAge, bool rpm=false) : cache(cache), maxAge(maxAge), rpm(rpm) {};
+};
+
+class YogaSMC;
+class hpFanTargetKey : public hpCachedKey {
+    YogaSMC *drv;
+protected:
+    SMC_RESULT writeAccess() override;
+    SMC_RESULT update(const SMC_DATA *src) override;
+public:
+    hpFanTargetKey(_Atomic(uint64_t) *cache, YogaSMC *drv) : hpCachedKey(cache, 10, true), drv(drv) {};
+};
+class hpFanModeKey : public VirtualSMCValue {
+    YogaSMC *drv; bool mask;
+protected:
+    SMC_RESULT readAccess() override;
+    SMC_RESULT writeAccess() override;
+    SMC_RESULT update(const SMC_DATA *src) override;
+public:
+    hpFanModeKey(YogaSMC *drv, bool mask) : drv(drv), mask(mask) {};
+};
+
 class messageKey : public VirtualSMCValue {
 protected:
     YogaBaseService *drv;

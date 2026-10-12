@@ -22,6 +22,27 @@ class YogaSMC : public YogaBaseService
     OSDeclareDefaultStructors(YogaSMC)
 
 protected:
+    bool hpThermalEnabled {false};
+    bool hpFanMethods {false};
+    bool hpFanRestorePending {false};
+    IOACPIPlatformDevice *hpCPUZone {nullptr};
+    _Atomic(uint64_t) hpFanRequest;
+    _Atomic(uint32_t) hpFanMode;
+    _Atomic(bool) hpFanAcceptWrites;
+    uint64_t hpFanAppliedRequest {0};
+    void updateHPFanControl();
+    void restoreHPFan(const char *reason);
+    void enableHPFanWrites() {
+        atomic_fetch_and_explicit(&hpFanRequest, ~static_cast<uint64_t>(0x20000), memory_order_release);
+        atomic_store_explicit(&hpFanAcceptWrites, true, memory_order_release);
+    }
+    IOReturn hpFanACPI(bool manual, uint32_t count);
+    static IOReturn hpFanRestoreGated(OSObject *owner, void *reason, void *, void *, void *);
+    IOACPIPlatformDevice *hpPCHZone {nullptr};
+    IOACPIPlatformDevice *hpChargerZone {nullptr};
+    _Atomic(uint64_t) hpFanTarget, hpPCHTemperature, hpSSDTemperature, hpChargerTemperature;
+    void addHPThermalKeys();
+    void updateHPThermal();
     bool awake {false};
     bool ready {false};
 
@@ -82,6 +103,10 @@ protected:
     inline virtual void getWMISensor(IOService* provider) {};
 
 public:
+    SMC_RESULT requestHPFan(bool target, uint16_t value);
+    uint32_t currentHPFanMode() { return atomic_load_explicit(&hpFanMode, memory_order_acquire); }
+    bool acceptsHPFanWrites() { return atomic_load_explicit(&hpFanAcceptWrites, memory_order_acquire); }
+    void systemWillShutdown(IOOptionBits specifier) override;
     virtual IOService *probe(IOService *provider, SInt32 *score) APPLE_KEXT_OVERRIDE;
     virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
     virtual void stop(IOService *provider) APPLE_KEXT_OVERRIDE;

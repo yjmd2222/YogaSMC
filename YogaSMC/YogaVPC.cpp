@@ -9,6 +9,25 @@
 
 #include "YogaVPC.hpp"
 
+// Retained ACPI-plane lookup for the allowlisted PCH hardware diagnostic only.
+static IOACPIPlatformDevice *findPCHDiagnosticDevice() {
+    auto iterator = IORegistryIterator::iterateOver(gIOACPIPlane, kIORegistryIterateRecursively);
+    if (iterator == nullptr) return nullptr;
+    IOACPIPlatformDevice *device = nullptr;
+    for (unsigned attempt = 0; attempt < 3 && device == nullptr; ++attempt) {
+        if (attempt) iterator->reset();
+        while (auto entry = iterator->getNextObject()) {
+            if (!strcmp(entry->getName(gIOACPIPlane), "PHTR")) {
+                device = OSDynamicCast(IOACPIPlatformDevice, entry);
+                if (device != nullptr) { device->retain(); break; }
+            }
+        }
+        if (iterator->isValid()) break;
+    }
+    iterator->release();
+    return device;
+}
+
 OSDefineMetaClassAndStructors(YogaVPC, YogaBaseService);
 
 IOService *YogaVPC::probe(IOService *provider, SInt32 *score)
@@ -260,6 +279,137 @@ void YogaVPC::setPropertiesGated(OSObject* props) {
                 OSNumber *value;
                 getPropertyNumber("ReadECOffset");
                 dumpECOffset(value->unsigned32BitValue());
+            } else if (key->isEqualTo("ThermalDebugRequest")) {
+                // Explicit diagnostic request only; no background polling or fan writes.
+                auto request = OSDynamicCast(OSNumber, dict->getObject(key));
+                if (request == nullptr || ec == nullptr) continue;
+                auto snapshot = OSDictionary::withCapacity(12);
+                if (!snapshot) continue;
+                snapshot->setObject("Request", request);
+                auto bridgeVersion = OSNumber::withNumber(4, 32);
+                if (bridgeVersion != nullptr) { snapshot->setObject("BridgeVersion", bridgeVersion); bridgeVersion->release(); }
+                // CPUZ selects EC thermal channel 1; read DTMP immediately afterwards.
+                const char *names[] = {"CPUZ", "DTMP", "FRDC", "FTGC", "GFXZ", "EXTZ",
+                                       "LOCZ", "BATZ", "CHGZ", "PCHZ", "DM1Z", "DM2Z", "PHWZ"};
+                for (unsigned n = 0; n < sizeof(names) / sizeof(names[0]); ++n) {
+                    auto item = OSDictionary::withCapacity(3);
+                    if (!item) continue;
+                    UInt32 raw = 0;
+                    IOReturn ret;
+                    bool validCPUZone = true;
+                    if (!strcmp(names[n], "DTMP")) {
+                        UInt32 before = 0, after = 0;
+                        auto beforeRet = ec->evaluateInteger("CRZN", &before);
+                        ret = ec->evaluateInteger("DTMP", &raw);
+                        auto afterRet = ec->evaluateInteger("CRZN", &after);
+                        validCPUZone = beforeRet == kIOReturnSuccess && afterRet == kIOReturnSuccess && before == 1 && after == 1;
+                        auto value = OSNumber::withNumber(before, 32);
+                        if (value != nullptr) { item->setObject("ZoneBefore", value); value->release(); }
+                        value = OSNumber::withNumber(after, 32);
+                        if (value != nullptr) { item->setObject("ZoneAfter", value); value->release(); }
+                    } else if (!strcmp(names[n], "FRDC") || !strcmp(names[n], "FTGC")) {
+                        ret = ec->evaluateInteger(names[n], &raw);
+                    } else {
+                        // IOACPIPlatformDevice evaluates a local ACPI NameSeg, not a full path.
+                        // Find the zone's platform device, then evaluate its four-character method.
+                        IOACPIPlatformDevice *zone = nullptr;
+                        auto iterator = IORegistryIterator::iterateOver(gIOACPIPlane, kIORegistryIterateRecursively);
+                        if (iterator) {
+                            for (unsigned attempt = 0; attempt < 3 && zone == nullptr; ++attempt) {
+                                if (attempt) iterator->reset();
+                                while (auto entry = iterator->getNextObject()) {
+                                    if (!strcmp(entry->getName(gIOACPIPlane), names[n])) {
+                                        zone = OSDynamicCast(IOACPIPlatformDevice, entry);
+                                        if (zone != nullptr) { zone->retain(); break; }
+                                    }
+                                }
+                                if (iterator->isValid()) break;
+                            }
+                            iterator->release();
+                        }
+                        if (zone == nullptr) {
+                            ret = kIOReturnNotFound;
+                        } else {
+                            if (n >= 10) {
+                                UInt32 sta = 0;
+                                ret = zone->evaluateInteger("_STA", &sta);
+                                auto staValue = OSNumber::withNumber(sta, 32);
+                                if (staValue != nullptr) { item->setObject("STA", staValue); staValue->release(); }
+                                if (ret != kIOReturnSuccess || !(sta & 1)) {
+                                    auto status = OSString::withCString(ret == kIOReturnSuccess ? "absent" : "sta-error");
+                                    if (status) { item->setObject("Status", status); status->release(); }
+                                    auto code = OSNumber::withNumber(static_cast<UInt32>(ret), 32);
+                                    if (code != nullptr) { item->setObject("IOReturn", code); code->release(); }
+                                    auto value = OSNumber::withNumber(sta, 32);
+                                    if (value != nullptr) { item->setObject("STA", value); value->release(); }
+                                    snapshot->setObject(names[n], item);
+                                    item->release();
+                                    zone->release();
+                                    continue;
+                                }
+                            }
+                            ret = zone->evaluateInteger("_TMP", &raw);
+                            zone->release();
+                        }
+                    }
+                    auto code = OSNumber::withNumber(static_cast<UInt32>(ret), 32);
+                    if (code != nullptr) { item->setObject("IOReturn", code); code->release(); }
+                    auto status = OSString::withCString(ret == kIOReturnSuccess ? (validCPUZone ? "ok" : "zone-not-cpu") : "error");
+                    if (status) { item->setObject("Status", status); status->release(); }
+                    if (ret == kIOReturnSuccess) {
+                        auto value = OSNumber::withNumber(raw, 32);
+                        if (value != nullptr) { item->setObject("Raw", value); value->release(); }
+                    }
+                    snapshot->setObject(names[n], item);
+                    item->release();
+                }
+                auto hardware = OSDictionary::withCapacity(8);
+                if (hardware != nullptr) {
+                    auto device = findPCHDiagnosticDevice();
+                    if (device != nullptr) {
+                        auto pci = OSDictionary::withCapacity(4);
+                        if (pci != nullptr) {
+                            const char *fields[] = {"IDEN", "PCMD", "BARL", "BARH"};
+                            for (unsigned i = 0; i < 4; ++i) {
+                                UInt32 raw = 0;
+                                auto item = OSDictionary::withCapacity(2);
+                                if (item == nullptr) continue;
+                                auto ret = device->evaluateInteger(fields[i], &raw);
+                                auto code = OSNumber::withNumber(static_cast<UInt32>(ret), 32);
+                                if (code != nullptr) { item->setObject("IOReturn", code); code->release(); }
+                                if (ret == kIOReturnSuccess) {
+                                    auto value = OSNumber::withNumber(raw, 32);
+                                    if (value != nullptr) { item->setObject("Raw", value); value->release(); }
+                                }
+                                pci->setObject(fields[i], item); item->release();
+                            }
+                            hardware->setObject("PCI", pci); pci->release();
+                        }
+                    }
+                    OSObject *object = nullptr;
+                    IOReturn ret = device != nullptr ? device->evaluateObject("PRDG", &object) : kIOReturnNotFound;
+                    auto code = OSNumber::withNumber(static_cast<UInt32>(ret), 32);
+                    if (code != nullptr) { hardware->setObject("IOReturn", code); code->release(); }
+                    auto values = OSDynamicCast(OSArray, object);
+                    const char *keys[] = {"Valid", "BAR64", "TEMP", "TSTS", "TSEL"};
+                    bool decoded = ret == kIOReturnSuccess && values != nullptr && values->getCount() == 5;
+                    if (decoded) {
+                        for (unsigned i = 0; i < 5; ++i) {
+                            auto value = OSDynamicCast(OSNumber, values->getObject(i));
+                            if (value == nullptr) { decoded = false; break; }
+                            auto number = OSNumber::withNumber(value->unsigned64BitValue(), 64);
+                            if (number != nullptr) { hardware->setObject(keys[i], number); number->release(); }
+                        }
+                    }
+                    auto status = OSString::withCString(decoded ? "ok" : "error-or-malformed");
+                    if (status) { hardware->setObject("Status", status); status->release(); }
+                    if (object != nullptr) object->release();
+                    if (device != nullptr) device->release();
+                    snapshot->setObject("PCHWHardware", hardware);
+                    hardware->release();
+                }
+                setProperty("ThermalDebugSnapshot", snapshot);
+                snapshot->release();
             } else if (key->isEqualTo("ReadECName")) {
                 OSString *value;
                 getPropertyString("ReadECName");
