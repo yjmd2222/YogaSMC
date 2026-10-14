@@ -55,7 +55,11 @@ void YogaSMC::addVSMCKey() {
         addECKeySp(pair.key, pair.name, atomicSpDeciKelvinKey);
 
     for (auto &pair : presetTemperature) {
-        if (hpThermalEnabled && pair.key == KeyTPCD) continue;
+        // A vendor subclass can supply a key before the generic configured path.
+        bool supplied = false;
+        for (size_t n=0; n<vsmcPlugin.data.size(); ++n)
+            if (vsmcPlugin.data[n].key == pair.key) supplied = true;
+        if (supplied) continue;
         addECKeySp(pair.key, pair.name, atomicSpKey);
     }
 
@@ -69,7 +73,7 @@ bool YogaSMC::start(IOService *provider) {
     if (!super::start(provider))
         return false;
 
-    atomic_init(&hpFanTarget, 0); atomic_init(&hpPCHTemperature, 0); atomic_init(&hpSSDTemperature, 0); atomic_init(&hpChargerTemperature, 0);
+    atomic_init(&hpFanTarget, 0); atomic_init(&hpSSDTemperature, 0); atomic_init(&hpChargerTemperature, 0);
     atomic_init(&hpFanRequest, 7447); atomic_init(&hpFanMode, 2);
     atomic_init(&hpFanAcceptWrites, false);
     hpThermalEnabled = getProperty("HPX2G2ThermalSMC") == kOSBooleanTrue;
@@ -116,7 +120,6 @@ void YogaSMC::stop(IOService *provider)
     OSSafeReleaseNULL(poller);
 
     OSSafeReleaseNULL(hpCPUZone);
-    OSSafeReleaseNULL(hpPCHZone);
     OSSafeReleaseNULL(hpChargerZone);
     terminate();
 
@@ -186,7 +189,6 @@ IOReturn YogaSMC::setPowerState(unsigned long powerStateOrdinal, IOService * wha
             workLoop->removeEventSource(poller);
             awake = false;
             atomic_store_explicit(&hpFanTarget, 0, memory_order_release);
-            atomic_store_explicit(&hpPCHTemperature, 0, memory_order_release);
             atomic_store_explicit(&hpSSDTemperature, 0, memory_order_release);
             atomic_store_explicit(&hpChargerTemperature, 0, memory_order_release);
             DebugLog("Going to sleep");
@@ -263,14 +265,14 @@ EXPORT extern "C" kern_return_t ADDPR(kern_stop)(kmod_info_t *, void *) {
 
 void YogaSMC::addHPThermalKeys() {
     if (!hpThermalEnabled) return;
-    const SMC_KEY keys[] = {KeyF0Tg(0), KeyTPCD, SMC_MAKE_IDENTIFIER('T','H','0','A'), SMC_MAKE_IDENTIFIER('T','C','H','P')};
-    _Atomic(uint64_t) *caches[] = {&hpFanTarget, &hpPCHTemperature, &hpSSDTemperature, &hpChargerTemperature};
-    for (unsigned i=0; i<4; ++i) {
+    const SMC_KEY keys[] = {KeyF0Tg(0), SMC_MAKE_IDENTIFIER('T','H','0','A'), SMC_MAKE_IDENTIFIER('T','C','H','P')};
+    _Atomic(uint64_t) *caches[] = {&hpFanTarget, &hpSSDTemperature, &hpChargerTemperature};
+    for (unsigned i=0; i<3; ++i) {
         bool duplicate=false;
         for (size_t n=0; n<vsmcPlugin.data.size(); ++n) if (vsmcPlugin.data[n].key==keys[i]) duplicate=true;
         if (duplicate) { AlwaysLog("HP thermal key already supplied, slot %u", i); continue; }
         hpCachedKey *key = i==0 && hpFanMethods ? new hpFanTargetKey(caches[i], this)
-            : new hpCachedKey(caches[i], i==2 ? 30 : 10, i==0);
+            : new hpCachedKey(caches[i], i==1 ? 30 : 10, i==0);
         VirtualSMCAPI::addKey(keys[i], vsmcPlugin.data, i==0
             ? VirtualSMCAPI::valueWithFp(0, SmcKeyTypeFpe2, key, SMC_KEY_ATTRIBUTE_READ | (hpFanMethods ? SMC_KEY_ATTRIBUTE_WRITE : 0))
             : VirtualSMCAPI::valueWithSp(0, SmcKeyTypeSp78, key, SMC_KEY_ATTRIBUTE_READ));
@@ -313,26 +315,6 @@ void YogaSMC::updateHPThermal() {
         else hpCacheStore(&hpFanTarget, rpm); setProperty("FanTargetRaw", raw, 32);
         setProperty("FanTargetRPM", rpm, 32);
     } else atomic_store_explicit(&hpFanTarget, 0, memory_order_release);
-    if (!hpPCHZone) {
-        auto iterator=IORegistryIterator::iterateOver(gIOACPIPlane,kIORegistryIterateRecursively);
-        if (iterator) {
-            while (auto entry=iterator->getNextObject()) {
-                if (!strcmp(entry->getName(gIOACPIPlane),"PHWZ")) {
-                    hpPCHZone=OSDynamicCast(IOACPIPlatformDevice,entry);
-                    if (hpPCHZone) {hpPCHZone->retain();break;}
-                }
-            }
-            iterator->release();
-        }
-    }
-    UInt32 sta=0; raw=0;
-    ret=hpPCHZone ? hpPCHZone->evaluateInteger("_STA",&sta) : kIOReturnNotFound;
-    if (ret==kIOReturnSuccess && (sta&1)) ret=hpPCHZone->evaluateInteger("_TMP",&raw);
-    else if (ret==kIOReturnSuccess) ret=kIOReturnNotReady;
-    setProperty("PCHTemperatureReadError",static_cast<uint32_t>(ret),32);
-    if (ret==kIOReturnSuccess && raw>=2732 && raw<=3982) {
-        hpCacheStore(&hpPCHTemperature,raw-2732);setProperty("PCHTemperatureDeciC",raw-2732,32);
-    } else atomic_store_explicit(&hpPCHTemperature,0,memory_order_release);
     // Stock CHGZ has no _STA; existence is sufficient for this allowlisted zone.
     if (!hpChargerZone) {
         auto iterator=IORegistryIterator::iterateOver(gIOACPIPlane,kIORegistryIterateRecursively);

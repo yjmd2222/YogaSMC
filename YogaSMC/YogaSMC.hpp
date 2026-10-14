@@ -38,9 +38,8 @@ protected:
     }
     IOReturn hpFanACPI(bool manual, uint32_t count);
     static IOReturn hpFanRestoreGated(OSObject *owner, void *reason, void *, void *, void *);
-    IOACPIPlatformDevice *hpPCHZone {nullptr};
     IOACPIPlatformDevice *hpChargerZone {nullptr};
-    _Atomic(uint64_t) hpFanTarget, hpPCHTemperature, hpSSDTemperature, hpChargerTemperature;
+    _Atomic(uint64_t) hpFanTarget, hpSSDTemperature, hpChargerTemperature;
     void addHPThermalKeys();
     void updateHPThermal();
     bool awake {false};

@@ -57,6 +57,8 @@ bool DYSMC::addTachometerKey(OSString *name) {
 bool DYSMC::addTemperatureKey(OSString *name) {
     for (auto &pair : DYPresetTemperature) {
         if (name->isEqualTo(pair.name)) {
+            // HP PHWZ owns TPCD; do not substitute a WMI "Local Temperature".
+            if (hpThermalEnabled && pair.key == KeyTPCD) return false;
             VirtualSMCAPI::addKey(pair.key, vsmcPlugin.data, VirtualSMCAPI::valueWithSp(0, SmcKeyTypeSp78, new atomicSpKey(&currentSensor[sensorCount])));
             return true;
         }
@@ -65,6 +67,13 @@ bool DYSMC::addTemperatureKey(OSString *name) {
 }
 
 void DYSMC::addVSMCKey() {
+    atomic_init(&hpPCHTemperature, 0);
+    if (hpThermalEnabled) {
+        VirtualSMCAPI::addKey(KeyTPCD, vsmcPlugin.data,
+            VirtualSMCAPI::valueWithSp(0, SmcKeyTypeSp78,
+                new hpCachedKey(&hpPCHTemperature, 10), SMC_KEY_ATTRIBUTE_READ));
+        setProperty("PCHTemperatureImplementation", "DYSMC PHWZ._TMP");
+    }
     if (!wmis) {
         super::addVSMCKey();
         return;
@@ -178,6 +187,7 @@ void DYSMC::addVSMCKey() {
 }
 
 void DYSMC::updateECVendor() {
+    updateHPPCH();
     OSObject *result = nullptr;
 
     for (UInt8 index = 0; index < ECSensorBase; ++index) {
@@ -219,4 +229,39 @@ void DYSMC::updateECVendor() {
 
 void DYSMC::getWMISensor(IOService *provider) {
     wmis = OSDynamicCast(DYWMI, provider->getProperty("DYSensor"));
+}
+
+void DYSMC::updateHPPCH() {
+    if (!hpThermalEnabled) return;
+    if (!hpPCHZone) {
+        auto iterator=IORegistryIterator::iterateOver(gIOACPIPlane,kIORegistryIterateRecursively);
+        if (iterator) {
+            while (auto entry=iterator->getNextObject()) {
+                if (!strcmp(entry->getName(gIOACPIPlane),"PHWZ")) {
+                    hpPCHZone=OSDynamicCast(IOACPIPlatformDevice,entry);
+                    if (hpPCHZone) {hpPCHZone->retain();break;}
+                }
+            }
+            iterator->release();
+        }
+    }
+    UInt32 sta=0, raw=0;
+    auto ret=hpPCHZone ? hpPCHZone->evaluateInteger("_STA",&sta) : kIOReturnNotFound;
+    if (ret==kIOReturnSuccess && (sta&1)) ret=hpPCHZone->evaluateInteger("_TMP",&raw);
+    else if (ret==kIOReturnSuccess) ret=kIOReturnNotReady;
+    setProperty("PCHTemperatureReadError",static_cast<uint32_t>(ret),32);
+    if (ret==kIOReturnSuccess && raw>=2732 && raw<=3982) {
+        hpCacheStore(&hpPCHTemperature,raw-2732);setProperty("PCHTemperatureDeciC",raw-2732,32);
+    } else atomic_store_explicit(&hpPCHTemperature,0,memory_order_release);
+}
+
+IOReturn DYSMC::setPowerState(unsigned long state, IOService *device) {
+    auto ret = super::setPowerState(state, device);
+    if (ret == kIOPMAckImplied && state == 0)
+        atomic_store_explicit(&hpPCHTemperature, 0, memory_order_release);
+    return ret;
+}
+void DYSMC::stop(IOService *provider) {
+    super::stop(provider); // Disable/remove the poller before releasing its zone.
+    OSSafeReleaseNULL(hpPCHZone);
 }

@@ -65,7 +65,13 @@ class DYSMC : public YogaSMC
     typedef YogaSMC super;
     OSDeclareDefaultStructors(DYSMC)
 
+public:
+    void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
+    IOReturn setPowerState(unsigned long state, IOService *device) APPLE_KEXT_OVERRIDE;
 private:
+    IOACPIPlatformDevice *hpPCHZone {nullptr};
+    _Atomic(uint64_t) hpPCHTemperature;
+    void updateHPPCH();
     /**
      *  WMI device, in place of provider and direct ACPI evaluations
      */
